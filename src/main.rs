@@ -39,7 +39,6 @@ enum Commands {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 struct GitConfig {
     remotes: Vec<GitRemote>,
@@ -58,7 +57,6 @@ struct BitBucketRepo {
     workspace: String,
 }
 
-#[allow(unused_variables)]
 fn parse_local_git_config(dir: PathBuf) -> Result<GitConfig, io::Error> {
     let git_config_path = dir.join(".git").join("config");
     let git_config = fs::read_to_string(git_config_path);
@@ -105,9 +103,14 @@ fn find_bitbucket_remote(remotes: Vec<GitRemote>) -> Option<GitRemote> {
     found_remote
 }
 
-// fn parse_bitbucket_data(remote: GitRemote) -> BitBucketRepo {
-//     let mut remote_url = Url::parse(&bitbucket_remote.url).expect("Invalid URL");
-// }
+fn parse_bitbucket_data(remote: &GitRemote) -> BitBucketRepo {
+    let url = Url::parse(&remote.url).expect("Invalid URL");
+    let path: Vec<&str> = url.path().split("/").collect();
+    let workspace = path[1].to_string();
+    let name = path[2].replace(".git", "").to_string();
+
+    BitBucketRepo { name, workspace }
+}
 
 #[allow(unused_variables)]
 fn main() {
@@ -123,41 +126,63 @@ fn main() {
         } => {
             let cwd = env::current_dir().expect("Can't read current dir");
 
-            // Parse local git config for remotes
-            let git_config = match parse_local_git_config(cwd) {
-                Ok(config) => config,
-                Err(e) => return match e.kind() {
-                    io::ErrorKind::NotFound => {
-                        println!("Error while parsing Git config: ./git/config not found")
-                    },
-                    _ => println!("Unexpected error while parsing Git config: {}", e),
+            let bb_repo = match repo {
+                Some(r) => {
+                    // TODO: Validate repo flag
+                    let repo_option: Vec<&str> = r.split("/").collect();
+                    BitBucketRepo {
+                        workspace: repo_option[0].to_string(),
+                        name: repo_option[1].to_string(),
+                    }
+                },
+                None => {
+                    // Parse local git config for remotes
+                    let git_config = match parse_local_git_config(cwd) {
+                        Ok(config) => config,
+                        Err(e) => return match e.kind() {
+                            io::ErrorKind::NotFound => {
+                                println!("Error while parsing Git config: ./git/config not found")
+                            },
+                            _ => println!("Unexpected error while parsing Git config: {}", e),
+                        }
+                    };
+
+                    // Find BitBucket remote repository in config
+                    let bitbucket_remote = match find_bitbucket_remote(git_config.remotes) {
+                        Some(remote) => remote,
+                        None => return println!("Project does not appear to be a repository on BitBucket.")
+                    };
+                    parse_bitbucket_data(&bitbucket_remote)
                 }
             };
 
-            // Find BitBucket remote repository in config
-            let bitbucket_remote = match find_bitbucket_remote(git_config.remotes) {
-                Some(remote) => remote,
-                None => return println!("Project does not appear to be a repository on BitBucket.")
-            };
+            // Set default browse URL (https://bitbucket.org/<workspace>/<repo_name>)
+            let mut browse_url = Url::parse(format!("https://{}", BITBUCKET_HOST).as_str()).expect("Unable to parse Bitbucket host");
+            browse_url.path_segments_mut().expect("")
+                .push(&bb_repo.workspace)
+                .push(&bb_repo.name);
 
-            let mut remote_url = Url::parse(&bitbucket_remote.url).expect("Invalid URL");
-            let path_args: Vec<&str> = remote_url.path().split("/").collect();
-            let owner = path_args[1];
-            let project=  path_args[2].replace(".git", "");
-
-            match branch {
-                Some(branch) => { 
-                    let branch_path = &format!("{}/{}/branch/{}", owner, project, branch);
-                    remote_url.set_path(&branch_path)
-                },
-                None => { remote_url.set_path(&format!("{}/{}", owner, project))}
+            // Handle browse by branch
+            if branch.is_some() {
+                let branch = branch.unwrap();
+                browse_url.path_segments_mut().unwrap().push("branch").push(&branch.as_str());
             }
 
-            let url = format!("{}://{}{}", remote_url.scheme(), remote_url.host_str().unwrap(), remote_url.path());
-            webbrowser::open(&url).expect("Could not open remote URL");
+            // Handle browse by commit
+            if commit.is_some() {
+                let commit = commit.unwrap();
+                browse_url.path_segments_mut().unwrap().push("src").push(&commit.as_str());
+            }
+
+            // Handle --no-browser flag
+            match no_browser {
+                true => println!("{}", browse_url.as_str()),
+                false => webbrowser::open(browse_url.as_str()).expect("Could not open remote URL")
+            }
+            
         }
         Commands::Clone { remote } => {
-            println!("Calling clone for remote {}", remote);
+            println!("Not implemented");
         }
     }
 }
