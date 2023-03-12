@@ -19,7 +19,9 @@ mod git_config {
 
     #[derive(Debug)]
     pub struct GitRemote {
+        name: String,
         pub url: String,
+        fetch: String,
     }
 
     impl GitConfig {
