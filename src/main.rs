@@ -1,9 +1,97 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
-use std::{env, fs, io, str};
+use std::{env, io, str};
 use url::Url;
 
 const BITBUCKET_HOST: &str = "bitbucket.org";
+
+mod git_config {
+    use std::{path::PathBuf, io, fs};
+
+    use url::Url;
+
+    const BITBUCKET_HOST: &str = "bitbucket.org";
+
+    #[derive(Debug)]
+    pub struct GitConfig {
+        remotes: Vec<GitRemote>,
+    }
+
+
+    #[derive(Debug)]
+    pub struct GitRemote {
+        pub url: String,
+    }
+
+    impl GitConfig {
+        pub fn find_bitbucket_remote(&self) -> Option<&GitRemote> {
+            let mut found_remote: Option<&GitRemote> = None;
+            for remote in self.remotes.iter() {
+                let remote_url = Url::parse(&remote.url).expect("Invalid URL");
+                if remote_url.host_str() == Some(BITBUCKET_HOST) {
+                    found_remote = Some(remote);
+                }
+            }
+            found_remote
+        }
+    }
+
+    pub fn parse_local(dir: PathBuf) -> Result<GitConfig, io::Error> {
+        let git_config_path = dir.join(".git").join("config");
+        let git_config = fs::read_to_string(git_config_path);
+
+        let config_data = match git_config {
+            Ok(config) => config,
+            Err(e) => return Err(e)
+        };
+        
+        let mut remotes: Vec<GitRemote> = Vec::new();
+        for attr in config_data.split("[") {
+            let config_set = attr.replace("\t", "").replace("]", "");
+            let config_set: Vec<&str> = config_set.split("\n").collect();
+
+            let header = config_set[0];
+            if header.starts_with("remote") {
+                let remote_options: Vec<&str> = header.split(" ").collect();
+                let url_options: Vec<&str> = config_set[1].split(" = ").collect();
+                let fetch_options: Vec<&str> = config_set[2].split(" = ").collect();
+                let name = remote_options[1].replace("\"", "");
+                let url = url_options[1].to_string();
+                let fetch = fetch_options[1].to_string();
+                remotes.push(GitRemote {
+                    name, 
+                    url, 
+                    fetch,
+                })
+            }
+        };
+
+        Ok(GitConfig {
+            remotes
+        })
+    }
+}
+
+mod BitBucketRepo {
+    use url::Url;
+
+    pub struct BitBucketRepo {
+        pub name: String,
+        pub workspace: String,
+    }
+
+    pub fn new(name: String, workspace: String) -> BitBucketRepo {
+        BitBucketRepo { name, workspace }
+    }
+
+    pub fn from_remote_url(url: &str) -> BitBucketRepo {
+        let url = Url::parse(&url).expect("Invalid URL");
+        let path: Vec<&str> = url.path().split("/").collect();
+        let workspace = path[1].to_string();
+        let name = path[2].replace(".git", "").to_string();
+    
+        BitBucketRepo { name, workspace }
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -39,79 +127,6 @@ enum Commands {
     }
 }
 
-#[derive(Debug)]
-struct GitConfig {
-    remotes: Vec<GitRemote>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-struct GitRemote {
-    name: String,
-    url: String,
-    fetch: String,
-}
-
-struct BitBucketRepo {
-    name: String,
-    workspace: String,
-}
-
-fn parse_local_git_config(dir: PathBuf) -> Result<GitConfig, io::Error> {
-    let git_config_path = dir.join(".git").join("config");
-    let git_config = fs::read_to_string(git_config_path);
-
-    let config_data = match git_config {
-        Ok(config) => config,
-        Err(e) => return Err(e)
-    };
-    
-    let mut remotes: Vec<GitRemote> = Vec::new();
-    for attr in config_data.split("[") {
-        let config_set = attr.replace("\t", "").replace("]", "");
-        let config_set: Vec<&str> = config_set.split("\n").collect();
-
-        let header = config_set[0];
-        if header.starts_with("remote") {
-            let remote_options: Vec<&str> = header.split(" ").collect();
-            let url_options: Vec<&str> = config_set[1].split(" = ").collect();
-            let fetch_options: Vec<&str> = config_set[2].split(" = ").collect();
-            let name = remote_options[1].replace("\"", "");
-            let url = url_options[1].to_string();
-            let fetch = fetch_options[1].to_string();
-            remotes.push(GitRemote {
-                name, 
-                url, 
-                fetch,
-            })
-        }
-    };
-
-    Ok(GitConfig {
-        remotes
-    })
-}
-
-fn find_bitbucket_remote(remotes: Vec<GitRemote>) -> Option<GitRemote> {
-    let mut found_remote: Option<GitRemote> = None;
-    for remote in remotes {
-        let remote_url = Url::parse(&remote.url).expect("Invalid URL");
-        if remote_url.host_str() == Some(BITBUCKET_HOST) {
-            found_remote = Some(remote);
-        }
-    }
-    found_remote
-}
-
-fn parse_bitbucket_data(remote: &GitRemote) -> BitBucketRepo {
-    let url = Url::parse(&remote.url).expect("Invalid URL");
-    let path: Vec<&str> = url.path().split("/").collect();
-    let workspace = path[1].to_string();
-    let name = path[2].replace(".git", "").to_string();
-
-    BitBucketRepo { name, workspace }
-}
-
 #[allow(unused_variables)]
 fn main() {
     let args = Cli::parse();
@@ -130,14 +145,11 @@ fn main() {
                 Some(r) => {
                     // TODO: Validate repo flag
                     let repo_option: Vec<&str> = r.split("/").collect();
-                    BitBucketRepo {
-                        workspace: repo_option[0].to_string(),
-                        name: repo_option[1].to_string(),
-                    }
+                    BitBucketRepo::new(repo_option[1].to_string(), repo_option[0].to_string())
                 },
                 None => {
                     // Parse local git config for remotes
-                    let git_config = match parse_local_git_config(cwd) {
+                    let git_config = match git_config::parse_local(cwd) {
                         Ok(config) => config,
                         Err(e) => return match e.kind() {
                             io::ErrorKind::NotFound => {
@@ -148,11 +160,11 @@ fn main() {
                     };
 
                     // Find BitBucket remote repository in config
-                    let bitbucket_remote = match find_bitbucket_remote(git_config.remotes) {
+                    let bitbucket_remote = match git_config.find_bitbucket_remote() {
                         Some(remote) => remote,
                         None => return println!("Project does not appear to be a repository on BitBucket.")
                     };
-                    parse_bitbucket_data(&bitbucket_remote)
+                    BitBucketRepo::from_remote_url(bitbucket_remote.url.as_str())
                 }
             };
 
