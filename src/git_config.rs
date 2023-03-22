@@ -9,7 +9,6 @@ pub struct GitConfig {
     remotes: Vec<GitRemote>,
 }
 
-
 #[derive(Debug)]
 pub struct GitRemote {
     name: String,
